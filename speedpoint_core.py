@@ -4,13 +4,13 @@ import os
 import hashlib
 import json
 import re
-from dotenv import load_dotenv
 from collections import Counter
 from pathlib import Path
 from datetime import date, datetime
 from uuid import uuid4
 import sys
 
+from dotenv import load_dotenv
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 
@@ -88,13 +88,19 @@ def parse_money(value: object) -> float | None:
 	if value in (None, ""):
 		return None
 	if isinstance(value, str):
-		cleaned = value.replace(" ", "").replace(",", "")
+		text = value.strip()
+		negative = text.startswith("(") and text.endswith(")")
+		if negative:
+			text = text[1:-1]
+		cleaned = re.sub(r"[^0-9.\-]", "", text)
 		if not cleaned:
 			return None
 		try:
 			number = float(cleaned)
 		except ValueError:
 			return None
+		if negative and number > 0:
+			number = -number
 	else:
 		try:
 			number = float(value)
@@ -110,6 +116,13 @@ def parse_amount(value: object) -> float | None:
 	if number is None:
 		return None
 	return round(number, 2)
+
+
+def normalize_amount_key(value: object) -> float | None:
+	number = parse_money(value)
+	if number is None:
+		return None
+	return round(abs(number), 2)
 
 
 def format_download_name(original_name: str, strip_leading_number: bool = False) -> str:
@@ -201,7 +214,7 @@ def build_payment_signature(payment_date: object, supplier_name: object, amount_
 		return None
 
 	date_key = normalize_date_key(payment_date)
-	amount_key = parse_amount(amount_paid)
+	amount_key = normalize_amount_key(amount_paid)
 	if not date_key or amount_key is None:
 		return None
 
@@ -327,7 +340,7 @@ def highlight_speedpoint_range(worksheet, row_number: int, start_column: int, en
 
 
 def highlight_ofx_payment_match(worksheet, row_number: int) -> None:
-	for column_number in range(1, 4):
+	for column_number in range(3, 4):
 		worksheet.cell(row=row_number, column=column_number).fill = OFX_HIGHLIGHT
 
 
