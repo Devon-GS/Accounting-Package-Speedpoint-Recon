@@ -1,14 +1,24 @@
 from __future__ import annotations
 
+import os
 import hashlib
 import json
 import re
+from collections import Counter
 from pathlib import Path
+from datetime import date, datetime
 from uuid import uuid4
 import sys
 
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
+
+try:
+	import psycopg
+	from psycopg.rows import dict_row
+except ImportError:  # pragma: no cover - optional dependency for database matching
+	psycopg = None
+	dict_row = None
 
 def get_app_root() -> Path:
 	if getattr(sys, "frozen", False):
@@ -20,6 +30,8 @@ BASE_DIR = get_app_root()
 SUPPORTED_EXTENSIONS = {".xlsx"}
 SPEEDPOINT_HIGHLIGHT = PatternFill(fill_type="solid", fgColor="FF86B9")
 BANK_HIGHLIGHT = PatternFill(fill_type="solid", fgColor="FFFF00")
+OFX_HIGHLIGHT = PatternFill(fill_type="solid", fgColor="FF00B0F0")
+IGNORED_SUPPLIER_NAME = "SASOL OIL 0000015733"
 
 
 def normalize_text(value: object) -> str:
@@ -36,6 +48,38 @@ def normalize_tokens(value: object) -> list[str]:
 
 def compact_text(value: object) -> str:
 	return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+def normalize_date_key(value: object) -> str | None:
+	if value in (None, ""):
+		return None
+	if isinstance(value, datetime):
+		return value.date().isoformat()
+	if isinstance(value, date):
+		return value.isoformat()
+	if isinstance(value, str):
+		text = value.strip()
+		for fmt in (
+			"%Y-%m-%d",
+			"%Y/%m/%d",
+			"%d/%m/%Y",
+			"%d-%m-%Y",
+			"%d %b %Y",
+			"%d %B %Y",
+		):
+			try:
+				return datetime.strptime(text, fmt).date().isoformat()
+			except ValueError:
+				pass
+		try:
+			return date.fromisoformat(text).isoformat()
+		except ValueError:
+			pass
+		try:
+			return datetime.fromisoformat(text).date().isoformat()
+		except ValueError:
+			pass
+	return None
 
 
 def parse_money(value: object) -> float | None:
@@ -93,6 +137,74 @@ def sha256_file(path: Path) -> str:
 		for chunk in iter(lambda: handle.read(8192), b""):
 			digest.update(chunk)
 	return digest.hexdigest()
+
+
+def build_database_config() -> dict[str, object]:
+	database_url = os.environ.get("DATABASE_URL", "").strip()
+	print(database_url)
+	if database_url:
+		return {"dsn": database_url}
+
+	return {
+		"host": os.environ.get("PGHOST") or os.environ.get("DB_HOST") or "localhost",
+		"port": int(os.environ.get("PGPORT") or os.environ.get("DB_PORT_BINDING") or "5432"),
+		"dbname": os.environ.get("PGDATABASE") or os.environ.get("DB_NAME") or "accounting",
+		"user": os.environ.get("PGUSER") or os.environ.get("DB_USER") or "accounting",
+		"password": os.environ.get("PGPASSWORD") or os.environ.get("DB_PASSWORD") or "",
+	}
+
+
+def connect_database():
+	if psycopg is None or dict_row is None:
+		raise RuntimeError(
+			"Database support requires psycopg. Install the project dependencies first."
+		)
+
+	config = build_database_config()
+	if "dsn" in config:
+		return psycopg.connect(config["dsn"], row_factory=dict_row)
+	return psycopg.connect(row_factory=dict_row, **config)
+
+
+def check_database_connection() -> tuple[bool, str]:
+	try:
+		connection = connect_database()
+	except Exception as exc:  # noqa: BLE001 - surfaced in the UI as a status message
+		return False, str(exc)
+
+	try:
+		with connection:
+			pass
+	except Exception as exc:  # noqa: BLE001 - surfaced in the UI as a status message
+		return False, str(exc)
+	return True, "Connected"
+
+
+def fetch_ofx_payments() -> list[dict[str, object]]:
+	query = """
+		SELECT payment_date, supplier_name, amount_paid, source_sheet
+		FROM payments
+		WHERE UPPER(TRIM(source_sheet)) = 'OFX'
+		ORDER BY payment_date, supplier_name, amount_paid
+	"""
+	with connect_database() as connection:
+		with connection.cursor() as cursor:
+			cursor.execute(query)
+			rows = cursor.fetchall()
+	return [dict(row) for row in rows]
+
+
+def build_payment_signature(payment_date: object, supplier_name: object, amount_paid: object) -> tuple[str, str, float] | None:
+	supplier_key = normalize_text(supplier_name)
+	if not supplier_key or supplier_key == IGNORED_SUPPLIER_NAME:
+		return None
+
+	date_key = normalize_date_key(payment_date)
+	amount_key = parse_amount(amount_paid)
+	if not date_key or amount_key is None:
+		return None
+
+	return date_key, supplier_key, amount_key
 
 
 def pick_bank_statement_sheet(workbook):
@@ -213,6 +325,11 @@ def highlight_speedpoint_range(worksheet, row_number: int, start_column: int, en
 		worksheet.cell(row=row_number, column=column_number).fill = SPEEDPOINT_HIGHLIGHT
 
 
+def highlight_ofx_payment_match(worksheet, row_number: int) -> None:
+	for column_number in range(1, 4):
+		worksheet.cell(row=row_number, column=column_number).fill = OFX_HIGHLIGHT
+
+
 def process_speedpoint_reconciliation(
 	speedpoint_path: Path,
 	bank_paths: list[Path],
@@ -229,9 +346,21 @@ def process_speedpoint_reconciliation(
 	speedpoint_original_name = speedpoint_path.name
 	speedpoint_workbook = load_workbook(speedpoint_path)
 	speedpoint_sheet = pick_speedpoint_sheet(speedpoint_workbook)
+	ofx_payments = fetch_ofx_payments()
+	ofx_payment_counts: Counter[tuple[str, str, float]] = Counter()
+	for payment in ofx_payments:
+		signature = build_payment_signature(
+			payment.get("payment_date"),
+			payment.get("supplier_name"),
+			payment.get("amount_paid"),
+		)
+		if signature is None:
+			continue
+		ofx_payment_counts[signature] += 1
 
 	unresolved_rows: list[dict[str, object]] = []
 	total_matches = 0
+	ofx_payment_matches = 0
 	edited_files: list[dict[str, str]] = []
 
 	for index, bank_path in enumerate(bank_paths, start=1):
@@ -247,6 +376,18 @@ def process_speedpoint_reconciliation(
 				break
 
 		for row_number in range(header_row + 1, bank_sheet.max_row + 1):
+			payment_signature = build_payment_signature(
+				bank_sheet.cell(row=row_number, column=1).value,
+				bank_sheet.cell(row=row_number, column=2).value,
+				bank_sheet.cell(row=row_number, column=3).value,
+			)
+			if payment_signature is not None and ofx_payment_counts.get(payment_signature, 0) > 0:
+				highlight_ofx_payment_match(bank_sheet, row_number)
+				ofx_payment_counts[payment_signature] -= 1
+				if ofx_payment_counts[payment_signature] <= 0:
+					del ofx_payment_counts[payment_signature]
+				ofx_payment_matches += 1
+
 			transaction_cell = bank_sheet.cell(row=row_number, column=2)
 			credit_cell = bank_sheet.cell(row=row_number, column=4)
 			transaction_info = parse_speedpoint_bank_transaction(transaction_cell.value)
@@ -337,6 +478,13 @@ def process_speedpoint_reconciliation(
 		"speedpoint_download_name": speedpoint_original_name,
 		"bank_count": len(bank_paths),
 		"matched_count": total_matches,
+		"ofx_payment_matched_count": ofx_payment_matches,
+		"ofx_payment_unmatched_count": sum(ofx_payment_counts.values()),
+		"ofx_payment_ignored_count": sum(
+			1
+			for payment in ofx_payments
+			if normalize_text(payment.get("supplier_name")) == IGNORED_SUPPLIER_NAME
+		),
 		"unresolved_count": len(unresolved_rows),
 		"unresolved_rows": unresolved_rows,
 		"edited_files": edited_files,

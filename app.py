@@ -8,7 +8,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import customtkinter as ctk
 
-from speedpoint_core import process_speedpoint_reconciliation
+from speedpoint_core import check_database_connection, process_speedpoint_reconciliation
 
 
 class SpeedpointApp(ctk.CTk):
@@ -27,6 +27,7 @@ class SpeedpointApp(ctk.CTk):
 		self.worker_queue: queue.Queue[tuple[str, object]] = queue.Queue()
 
 		self._build_ui()
+		self.after(0, self._check_database_connection_async)
 		self.after(100, self._poll_worker_queue)
 
 	def _build_ui(self) -> None:
@@ -60,6 +61,15 @@ class SpeedpointApp(ctk.CTk):
 
 		self.status_label = ctk.CTkLabel(button_row, text="Selected files will be edited in place.")
 		self.status_label.grid(row=0, column=1, padx=(12, 0), sticky="w")
+
+		self.db_status_pill = ctk.CTkLabel(
+			button_row,
+			text="Database: checking...",
+			corner_radius=999,
+			fg_color="#6b7280",
+			text_color="white",
+		)
+		self.db_status_pill.grid(row=0, column=2, padx=(12, 0), sticky="e")
 
 		self.warning_strip = ctk.CTkFrame(action_bar, corner_radius=12)
 		self.warning_strip.grid(row=1, column=0, padx=20, pady=(0, 0), sticky="ew")
@@ -292,12 +302,22 @@ class SpeedpointApp(ctk.CTk):
 			return
 		self.worker_queue.put(("result", manifest))
 
+	def _check_database_connection_async(self) -> None:
+		thread = threading.Thread(target=self._worker_database_status, daemon=True)
+		thread.start()
+
+	def _worker_database_status(self) -> None:
+		connected, message = check_database_connection()
+		self.worker_queue.put(("db_status", (connected, message)))
+
 	def _poll_worker_queue(self) -> None:
 		try:
 			while True:
 				kind, payload = self.worker_queue.get_nowait()
 				if kind == "error":
 					self._handle_error(payload)
+				elif kind == "db_status":
+					self._handle_database_status(payload)
 				else:
 					self._handle_result(payload)
 		except queue.Empty:
@@ -310,18 +330,38 @@ class SpeedpointApp(ctk.CTk):
 		messagebox.showerror("Processing failed", str(exc))
 		self.summary_label.configure(text="Processing failed.")
 
+	def _handle_database_status(self, payload: tuple[bool, str]) -> None:
+		connected, message = payload
+		if connected:
+			self.db_status_pill.configure(text="Database: Connected", fg_color="#16a34a")
+		else:
+			self.db_status_pill.configure(text="Database: Unavailable", fg_color="#dc2626")
+			self.status_label.configure(text=message)
+
 	def _handle_result(self, manifest: dict[str, object]) -> None:
 		self.results = manifest
 		self.process_button.configure(state="normal")
 
 		matched = int(manifest.get("matched_count", 0))
 		unresolved = int(manifest.get("unresolved_count", 0))
+		payment_matched = int(manifest.get("ofx_payment_matched_count", 0))
+		payment_unmatched = int(manifest.get("ofx_payment_unmatched_count", 0))
+		payment_ignored = int(manifest.get("ofx_payment_ignored_count", 0))
 		output_files = manifest.get("output_files", [])
 		self.summary_label.configure(
-			text=f"Matched {matched} transaction{'s' if matched != 1 else ''} and found {unresolved} unresolved item{'s' if unresolved != 1 else ''}. The selected files were saved back in place."
+			text=(
+				f"Matched {matched} Speedpoint transaction{'s' if matched != 1 else ''}, "
+				f"{payment_matched} OFX payment row{'s' if payment_matched != 1 else ''}, "
+				f"and found {unresolved} unresolved Speedpoint item{'s' if unresolved != 1 else ''}."
+			)
 		)
 		if output_files:
-			self.status_label.configure(text=f"Saved {len(output_files)} file{'s' if len(output_files) != 1 else ''} in place.")
+			self.status_label.configure(
+				text=(
+					f"Saved {len(output_files)} file{'s' if len(output_files) != 1 else ''} in place. "
+					f"OFX matched: {payment_matched}, unmatched: {payment_unmatched}, ignored: {payment_ignored}."
+				)
+			)
 		else:
 			self.status_label.configure(text="Selected files were edited in place.")
 
