@@ -4,6 +4,7 @@ import os
 import hashlib
 import json
 import re
+from dotenv import load_dotenv
 from collections import Counter
 from pathlib import Path
 from datetime import date, datetime
@@ -32,6 +33,7 @@ SPEEDPOINT_HIGHLIGHT = PatternFill(fill_type="solid", fgColor="FF86B9")
 BANK_HIGHLIGHT = PatternFill(fill_type="solid", fgColor="FFFF00")
 OFX_HIGHLIGHT = PatternFill(fill_type="solid", fgColor="FF00B0F0")
 IGNORED_SUPPLIER_NAME = "SASOL OIL 0000015733"
+load_dotenv()
 
 
 def normalize_text(value: object) -> str:
@@ -141,7 +143,6 @@ def sha256_file(path: Path) -> str:
 
 def build_database_config() -> dict[str, object]:
 	database_url = os.environ.get("DATABASE_URL", "").strip()
-	print(database_url)
 	if database_url:
 		return {"dsn": database_url}
 
