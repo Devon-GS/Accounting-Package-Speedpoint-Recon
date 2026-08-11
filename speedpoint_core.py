@@ -341,13 +341,5 @@ def process_speedpoint_reconciliation(
 		"unresolved_rows": unresolved_rows,
 		"edited_files": edited_files,
 	}
-	manifest["source_folder"] = str(speedpoint_path.parent)
 	manifest["output_files"] = [item["stored_name"] for item in edited_files]
 	return manifest
-
-
-def open_result_folder_path(manifest: dict[str, object]) -> Path:
-	source_folder = manifest.get("source_folder")
-	if source_folder:
-		return Path(source_folder)
-	raise ValueError("Result folder is not available.")

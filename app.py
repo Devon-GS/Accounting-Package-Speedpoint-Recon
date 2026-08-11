@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import os
 import queue
-import sys
 import threading
 from pathlib import Path
 import tkinter as tk
@@ -10,10 +8,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import customtkinter as ctk
 
-from speedpoint_core import (
-	open_result_folder_path,
-	process_speedpoint_reconciliation,
-)
+from speedpoint_core import process_speedpoint_reconciliation
 
 
 class SpeedpointApp(ctk.CTk):
@@ -49,7 +44,7 @@ class SpeedpointApp(ctk.CTk):
 		action_bar = ctk.CTkFrame(self, corner_radius=18)
 		action_bar.grid(row=1, column=0, padx=24, pady=(0, 24), sticky="nsew")
 		action_bar.grid_columnconfigure(0, weight=1)
-		action_bar.grid_rowconfigure(1, weight=1)
+		action_bar.grid_rowconfigure(2, weight=1)
 
 		button_row = ctk.CTkFrame(action_bar, fg_color="transparent")
 		button_row.grid(row=0, column=0, sticky="ew", padx=20, pady=(18, 10))
@@ -63,20 +58,23 @@ class SpeedpointApp(ctk.CTk):
 		)
 		self.process_button.grid(row=0, column=0, sticky="w")
 
-		self.open_output_button = ctk.CTkButton(
-			button_row,
-			text="Open Source Folder",
-			height=42,
-			state="disabled",
-			command=self.open_source_folder,
-		)
-		self.open_output_button.grid(row=0, column=1, padx=(12, 0), sticky="w")
-
 		self.status_label = ctk.CTkLabel(button_row, text="Selected files will be edited in place.")
-		self.status_label.grid(row=0, column=3, sticky="e")
+		self.status_label.grid(row=0, column=1, padx=(12, 0), sticky="w")
+
+		self.warning_strip = ctk.CTkFrame(action_bar, corner_radius=12)
+		self.warning_strip.grid(row=1, column=0, padx=20, pady=(0, 0), sticky="ew")
+		self.warning_strip.grid_columnconfigure(0, weight=1)
+
+		warning_text = ctk.CTkLabel(
+			self.warning_strip,
+			text="The selected files will be overwritten after you confirm.",
+			text_color=("gray30", "gray80"),
+			justify="left",
+		)
+		warning_text.grid(row=0, column=0, padx=16, pady=10, sticky="w")
 
 		results_frame = ctk.CTkFrame(action_bar, corner_radius=14)
-		results_frame.grid(row=1, column=0, padx=20, pady=(0, 20), sticky="nsew")
+		results_frame.grid(row=2, column=0, padx=20, pady=(12, 20), sticky="nsew")
 		results_frame.grid_columnconfigure(0, weight=1)
 		results_frame.grid_rowconfigure(1, weight=1)
 
@@ -108,22 +106,19 @@ class SpeedpointApp(ctk.CTk):
 		heading = ctk.CTkLabel(card, text="Speedpoints", font=ctk.CTkFont(size=20, weight="bold"))
 		heading.grid(row=0, column=0, padx=18, pady=(18, 4), sticky="w")
 
-		badge = ctk.CTkLabel(card, text="Single .xlsx", corner_radius=12, fg_color="#1f1f1f")
-		badge.grid(row=0, column=1, padx=18, pady=(18, 4), sticky="e")
-
 		description = ctk.CTkLabel(
 			card,
 			text="Upload the Speedpoints workbook that contains the terminal columns for 946389 and 946390.",
 			wraplength=480,
 			justify="left",
 		)
-		description.grid(row=1, column=0, columnspan=2, padx=18, pady=(0, 14), sticky="w")
+		description.grid(row=1, column=0, padx=18, pady=(0, 14), sticky="w")
 
 		label = ctk.CTkLabel(card, text="Speedpoints workbook")
 		label.grid(row=2, column=0, padx=18, pady=(0, 6), sticky="w")
 
 		row = ctk.CTkFrame(card, fg_color="transparent")
-		row.grid(row=3, column=0, columnspan=2, padx=18, pady=(0, 6), sticky="ew")
+		row.grid(row=3, column=0, padx=18, pady=(0, 6), sticky="ew")
 		row.grid_columnconfigure(0, weight=1)
 
 		self.speedpoint_entry = ctk.CTkEntry(row, placeholder_text="No file selected")
@@ -134,7 +129,7 @@ class SpeedpointApp(ctk.CTk):
 		browse.grid(row=0, column=1, padx=(12, 0))
 
 		helper = ctk.CTkLabel(card, text="Choose one `.xlsx` file only.", text_color=("gray35", "gray75"))
-		helper.grid(row=4, column=0, columnspan=2, padx=18, pady=(0, 18), sticky="w")
+		helper.grid(row=4, column=0, padx=18, pady=(0, 18), sticky="w")
 		return card
 
 	def _build_bank_card(self, parent: ctk.CTkFrame) -> ctk.CTkFrame:
@@ -145,19 +140,16 @@ class SpeedpointApp(ctk.CTk):
 		heading = ctk.CTkLabel(card, text="Bank Statements", font=ctk.CTkFont(size=20, weight="bold"))
 		heading.grid(row=0, column=0, padx=18, pady=(18, 4), sticky="w")
 
-		badge = ctk.CTkLabel(card, text="Multiple .xlsx", corner_radius=12, fg_color="#1f1f1f")
-		badge.grid(row=0, column=1, padx=18, pady=(18, 4), sticky="e")
-
 		description = ctk.CTkLabel(
 			card,
 			text="Only the Date, Transactions, and Credit columns are used from these files.",
 			wraplength=480,
 			justify="left",
 		)
-		description.grid(row=1, column=0, columnspan=2, padx=18, pady=(0, 14), sticky="w")
+		description.grid(row=1, column=0, padx=18, pady=(0, 14), sticky="w")
 
 		buttons = ctk.CTkFrame(card, fg_color="transparent")
-		buttons.grid(row=2, column=0, columnspan=2, padx=18, pady=(0, 10), sticky="ew")
+		buttons.grid(row=2, column=0, padx=18, pady=(0, 10), sticky="ew")
 		buttons.grid_columnconfigure(1, weight=1)
 
 		add_button = ctk.CTkButton(buttons, text="Add Files", width=110, command=self.choose_bank_files)
@@ -167,7 +159,7 @@ class SpeedpointApp(ctk.CTk):
 		clear_button.grid(row=0, column=1, padx=(12, 0), sticky="w")
 
 		self.bank_list = tk_list = ctk.CTkTextbox(card, height=180, wrap="none")
-		tk_list.grid(row=3, column=0, columnspan=2, padx=18, pady=(0, 18), sticky="nsew")
+		tk_list.grid(row=3, column=0, padx=18, pady=(0, 18), sticky="nsew")
 		tk_list.insert("1.0", "No bank statement files selected.")
 		tk_list.configure(state="disabled")
 		return card
@@ -282,9 +274,10 @@ class SpeedpointApp(ctk.CTk):
 		if not self.bank_files:
 			messagebox.showwarning("Missing files", "Please choose at least one Bank Statements .xlsx file.")
 			return
+		if not self._confirm_overwrite():
+			return
 
 		self.process_button.configure(state="disabled")
-		self.open_output_button.configure(state="disabled")
 		self.summary_label.configure(text="Processing files...")
 		self._clear_results_table()
 
@@ -293,7 +286,7 @@ class SpeedpointApp(ctk.CTk):
 
 	def _worker_process(self) -> None:
 		try:
-			manifest = process_speedpoint_reconciliation(self.speedpoint_file, self.bank_files, self.output_root)
+			manifest = process_speedpoint_reconciliation(self.speedpoint_file, self.bank_files)
 		except Exception as exc:  # noqa: BLE001 - surfaced to the UI
 			self.worker_queue.put(("error", exc))
 			return
@@ -320,7 +313,6 @@ class SpeedpointApp(ctk.CTk):
 	def _handle_result(self, manifest: dict[str, object]) -> None:
 		self.results = manifest
 		self.process_button.configure(state="normal")
-		self.open_output_button.configure(state="normal")
 
 		matched = int(manifest.get("matched_count", 0))
 		unresolved = int(manifest.get("unresolved_count", 0))
@@ -366,21 +358,22 @@ class SpeedpointApp(ctk.CTk):
 		self.empty_state.grid()
 		self.tree.master.grid_remove()
 
-	def open_source_folder(self) -> None:
-		if not self.results:
-			return
-		try:
-			folder = open_result_folder_path(self.results)
-		except Exception as exc:  # noqa: BLE001 - surfaced to the UI
-			messagebox.showerror("Cannot open folder", str(exc))
-			return
-		if os.name == "nt":
-			os.startfile(folder)  # type: ignore[attr-defined]
-		else:
-			import subprocess
+	def _confirm_overwrite(self) -> bool:
+		selected_files = [self.speedpoint_file, *self.bank_files]
+		if not selected_files:
+			return False
 
-			opener = "open" if sys.platform == "darwin" else "xdg-open"
-			subprocess.Popen([opener, str(folder)])  # noqa: S603,S607 - local GUI action
+		preview_lines = [str(path) for path in selected_files[:4]]
+		if len(selected_files) > 4:
+			preview_lines.append(f"... and {len(selected_files) - 4} more file(s)")
+
+		message = (
+			"This will overwrite the selected workbook(s) in place.\n\n"
+			"Files to be edited:\n"
+			+ "\n".join(f"• {line}" for line in preview_lines)
+			+ "\n\nDo you want to continue?"
+		)
+		return messagebox.askyesno("Confirm overwrite", message)
 
 
 def main() -> None:
