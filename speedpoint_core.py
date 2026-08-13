@@ -10,6 +10,7 @@ from datetime import date, datetime
 from uuid import uuid4
 import sys
 
+import keyring
 from dotenv import load_dotenv
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
@@ -33,6 +34,7 @@ SPEEDPOINT_HIGHLIGHT = PatternFill(fill_type="solid", fgColor="FF86B9")
 BANK_HIGHLIGHT = PatternFill(fill_type="solid", fgColor="FFFF00")
 OFX_HIGHLIGHT = PatternFill(fill_type="solid", fgColor="FF00B0F0")
 IGNORED_SUPPLIER_NAME = "SASOL OIL 0000015733"
+APP_NAME = "SpeedpointRecon"
 load_dotenv()
 
 
@@ -155,7 +157,11 @@ def sha256_file(path: Path) -> str:
 
 
 def build_database_config() -> dict[str, object]:
-	database_url = os.environ.get("DATABASE_URL", "").strip()
+	database_url = keyring.get_password(APP_NAME, "DATABASE_URL")
+
+	if not database_url:
+		database_url = os.environ.get("DATABASE_URL", "").strip()
+
 	if database_url:
 		return {"dsn": database_url}
 
