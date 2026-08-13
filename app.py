@@ -18,8 +18,22 @@ class SpeedpointApp(ctk.CTk):
 		ctk.set_default_color_theme("blue")
 
 		self.title("Speedpoint Reconciliation")
-		self.geometry("1320x860")
-		self.minsize(1120, 760)
+
+		# 1. Define your target window dimensions
+		window_width = 1320
+		window_height = 790
+		
+		# 2. Get the screen dimensions
+		screen_width = self.winfo_screenwidth()
+		screen_height = self.winfo_screenheight()
+		
+		# 3. Calculate the x and y coordinates to center the window
+		center_x = int((screen_width - window_width) / 2)
+		center_y = int((screen_height - window_height) / 2)
+		
+		# 4. Apply the geometry string with the placement coordinates: "WidthxHeight+X+Y"
+		self.geometry(f"{window_width}x{window_height}+{center_x}+{center_y}")
+		self.minsize(1120, 600)
 
 		self.speedpoint_file: Path | None = None
 		self.bank_files: list[Path] = []
@@ -59,8 +73,8 @@ class SpeedpointApp(ctk.CTk):
 		)
 		self.process_button.grid(row=0, column=0, sticky="w")
 
-		self.status_label = ctk.CTkLabel(button_row, text="Selected files will be edited in place.")
-		self.status_label.grid(row=0, column=1, padx=(12, 0), sticky="w")
+		# self.status_label = ctk.CTkLabel(button_row, text="Selected files will be edited in place.")
+		# self.status_label.grid(row=0, column=1, padx=(12, 0), sticky="w")
 
 		self.db_status_pill = ctk.CTkLabel(
 			button_row,
@@ -71,17 +85,17 @@ class SpeedpointApp(ctk.CTk):
 		)
 		self.db_status_pill.grid(row=0, column=2, padx=(12, 0), sticky="e")
 
-		self.warning_strip = ctk.CTkFrame(action_bar, corner_radius=12)
-		self.warning_strip.grid(row=1, column=0, padx=20, pady=(0, 0), sticky="ew")
-		self.warning_strip.grid_columnconfigure(0, weight=1)
+		# self.warning_strip = ctk.CTkFrame(action_bar, corner_radius=12)
+		# self.warning_strip.grid(row=1, column=0, padx=20, pady=(0, 0), sticky="ew")
+		# self.warning_strip.grid_columnconfigure(0, weight=1)
 
-		warning_text = ctk.CTkLabel(
-			self.warning_strip,
-			text="The selected files will be overwritten after you confirm.",
-			text_color=("gray30", "gray80"),
-			justify="left",
-		)
-		warning_text.grid(row=0, column=0, padx=16, pady=10, sticky="w")
+		# warning_text = ctk.CTkLabel(
+		# 	self.warning_strip,
+		# 	text="The selected files will be overwritten after you confirm.",
+		# 	text_color=("gray30", "gray80"),
+		# 	justify="left",
+		# )
+		# warning_text.grid(row=0, column=0, padx=16, pady=10, sticky="w")
 
 		results_frame = ctk.CTkFrame(action_bar, corner_radius=14)
 		results_frame.grid(row=2, column=0, padx=20, pady=(12, 20), sticky="nsew")
