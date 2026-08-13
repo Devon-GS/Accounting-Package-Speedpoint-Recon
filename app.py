@@ -73,8 +73,8 @@ class SpeedpointApp(ctk.CTk):
 		)
 		self.process_button.grid(row=0, column=0, sticky="w")
 
-		# self.status_label = ctk.CTkLabel(button_row, text="Selected files will be edited in place.")
-		# self.status_label.grid(row=0, column=1, padx=(12, 0), sticky="w")
+		self.status_label = ctk.CTkLabel(button_row, text="Selected files will be edited in place.")
+		self.status_label.grid(row=0, column=1, padx=(12, 0), sticky="w")
 
 		self.db_status_pill = ctk.CTkLabel(
 			button_row,
