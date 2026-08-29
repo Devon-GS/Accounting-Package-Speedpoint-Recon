@@ -33,7 +33,10 @@ SUPPORTED_EXTENSIONS = {".xlsx"}
 SPEEDPOINT_HIGHLIGHT = PatternFill(fill_type="solid", fgColor="FF86B9")
 BANK_HIGHLIGHT = PatternFill(fill_type="solid", fgColor="FFFF00")
 OFX_HIGHLIGHT = PatternFill(fill_type="solid", fgColor="FF00B0F0")
-IGNORED_SUPPLIER_NAME = "SASOL OIL 0000015733"
+IGNORED_SUPPLIER_NAMES = {
+	"SASOL OIL 0000015733",
+	"FIGMENT SASOLE2607 SL32",
+}
 APP_NAME = "SpeedpointRecon"
 load_dotenv()
 
@@ -216,7 +219,7 @@ def fetch_ofx_payments() -> list[dict[str, object]]:
 
 def build_payment_signature(payment_date: object, supplier_name: object, amount_paid: object) -> tuple[str, str, float] | None:
 	supplier_key = normalize_text(supplier_name)
-	if not supplier_key or supplier_key == IGNORED_SUPPLIER_NAME:
+	if not supplier_key or supplier_key in IGNORED_SUPPLIER_NAMES:
 		return None
 
 	date_key = normalize_date_key(payment_date)
@@ -503,7 +506,7 @@ def process_speedpoint_reconciliation(
 		"ofx_payment_ignored_count": sum(
 			1
 			for payment in ofx_payments
-			if normalize_text(payment.get("supplier_name")) == IGNORED_SUPPLIER_NAME
+			if normalize_text(payment.get("supplier_name")) in IGNORED_SUPPLIER_NAMES
 		),
 		"unresolved_count": len(unresolved_rows),
 		"unresolved_rows": unresolved_rows,
