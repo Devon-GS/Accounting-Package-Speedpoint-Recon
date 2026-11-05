@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import hashlib
 import json
+import logging
+from logging.handlers import RotatingFileHandler
 import re
 from collections import Counter
 from pathlib import Path
@@ -39,6 +41,54 @@ IGNORED_SUPPLIER_NAMES = {
 }
 APP_NAME = "SpeedpointRecon"
 load_dotenv()
+
+
+class SingleFileRotatingHandler(RotatingFileHandler):
+	"""Rotating handler that truncates the log file when it hits maxBytes, keeping strictly one file."""
+
+	def doRollover(self):
+		if self.stream:
+			self.stream.close()
+			self.stream = None
+		# Clear the current file so no backup files are created and size stays <= maxBytes
+		with open(self.baseFilename, "w", encoding=self.encoding):
+			pass
+		if not self.delay:
+			self.stream = self._open()
+
+
+def setup_logger() -> logging.Logger:
+	app_logger = logging.getLogger("speedpoint")
+	if not app_logger.handlers:
+		app_logger.setLevel(logging.DEBUG)
+
+		formatter = logging.Formatter(
+			"%(asctime)s [%(levelname)s] %(message)s",
+			datefmt="%Y-%m-%d %H:%M:%S",
+		)
+
+		# Single log file capped at 10MB
+		log_path = BASE_DIR / "speedpoint.log"
+		file_handler = SingleFileRotatingHandler(
+			log_path,
+			maxBytes=10 * 1024 * 1024,
+			backupCount=0,
+			encoding="utf-8",
+		)
+		file_handler.setLevel(logging.DEBUG)
+		file_handler.setFormatter(formatter)
+		app_logger.addHandler(file_handler)
+
+		# # Also output to console
+		# console_handler = logging.StreamHandler(sys.stdout)
+		# console_handler.setLevel(logging.DEBUG)
+		# console_handler.setFormatter(formatter)
+		# app_logger.addHandler(console_handler)
+
+	return app_logger
+
+
+logger = setup_logger()
 
 
 def normalize_text(value: object) -> str:
@@ -369,17 +419,43 @@ def process_speedpoint_reconciliation(
 	speedpoint_original_name = speedpoint_path.name
 	speedpoint_workbook = load_workbook(speedpoint_path)
 	speedpoint_sheet = pick_speedpoint_sheet(speedpoint_workbook)
+
+	logger.info("=" * 70)
+	logger.info("Starting reconciliation run %s", run_id)
+	logger.debug("Fetching OFX payments from database...")
 	ofx_payments = fetch_ofx_payments()
+	logger.debug("Total OFX rows returned from database: %d", len(ofx_payments))
+
 	ofx_payment_counts: Counter[tuple[str, str, float]] = Counter()
+	db_signatures_list: list[tuple[str, str, float]] = []
+
 	for payment in ofx_payments:
-		signature = build_payment_signature(
-			payment.get("payment_date"),
-			payment.get("supplier_name"),
-			payment.get("amount_paid"),
-		)
+		raw_d = payment.get("payment_date")
+		raw_s = payment.get("supplier_name")
+		raw_a = payment.get("amount_paid")
+		signature = build_payment_signature(raw_d, raw_s, raw_a)
 		if signature is None:
+			logger.debug(
+				"Could not build signature for DB payment: date=%r, supplier=%r, amount=%r",
+				raw_d,
+				raw_s,
+				raw_a,
+			)
 			continue
 		ofx_payment_counts[signature] += 1
+		db_signatures_list.append(signature)
+
+	logger.debug(
+		"Active unique DB OFX signatures: %d (total count: %d)",
+		len(ofx_payment_counts),
+		sum(ofx_payment_counts.values()),
+	)
+	if ofx_payment_counts:
+		sample_lines = "\n".join(
+			f"  Date: {sig[0]} | Supplier: {sig[1]!r} | Amount: {sig[2]}"
+			for sig in list(ofx_payment_counts.keys())[:5]
+		)
+		logger.debug("Sample DB signatures:\n%s", sample_lines)
 
 	unresolved_rows: list[dict[str, object]] = []
 	total_matches = 0
@@ -392,24 +468,76 @@ def process_speedpoint_reconciliation(
 		bank_sheet = pick_bank_statement_sheet(bank_workbook)
 		header_row = 2
 
+		logger.info("Processing bank statement: %s (Sheet: %s)", bank_original_name, bank_sheet.title)
 		for row_number in range(1, min(bank_sheet.max_row, 10) + 1):
 			row_values = [normalize_text(bank_sheet.cell(row_number, column).value) for column in range(1, 6)]
 			if "DATE" in row_values and "TRANSACTIONS" in row_values and "CREDIT" in row_values:
 				header_row = row_number
 				break
 
+		logger.debug("Header row identified at line: %d", header_row)
+
 		for row_number in range(header_row + 1, bank_sheet.max_row + 1):
-			payment_signature = build_payment_signature(
-				bank_sheet.cell(row=row_number, column=1).value,
-				bank_sheet.cell(row=row_number, column=2).value,
-				bank_sheet.cell(row=row_number, column=3).value,
-			)
+			c1_val = bank_sheet.cell(row=row_number, column=1).value
+			c2_val = bank_sheet.cell(row=row_number, column=2).value
+			c3_val = bank_sheet.cell(row=row_number, column=3).value
+			c4_val = bank_sheet.cell(row=row_number, column=4).value
+
+			# Skip rows completely blank in the first 4 columns
+			if not any([c1_val, c2_val, c3_val, c4_val]):
+				continue
+
+			payment_signature = build_payment_signature(c1_val, c2_val, c3_val)
+
 			if payment_signature is not None and ofx_payment_counts.get(payment_signature, 0) > 0:
+				logger.info("Row %d: MATCH FOUND for %s", row_number, payment_signature)
 				highlight_ofx_payment_match(bank_sheet, row_number)
 				ofx_payment_counts[payment_signature] -= 1
 				if ofx_payment_counts[payment_signature] <= 0:
 					del ofx_payment_counts[payment_signature]
 				ofx_payment_matches += 1
+			else:
+				amt_c3 = normalize_amount_key(c3_val)
+				amt_c4 = normalize_amount_key(c4_val)
+				date_norm = normalize_date_key(c1_val)
+				desc_norm = normalize_text(c2_val)
+
+				target_amount = amt_c3 or amt_c4
+				near_misses = [
+					sig for sig in db_signatures_list
+					if target_amount is not None and sig[2] == target_amount
+				]
+
+				if near_misses:
+					candidate_details = "\n".join(
+						f"  DB Record: Date={cand[0]} [{'MATCH' if cand[0] == date_norm else 'MISMATCH'}], "
+						f"Supplier={cand[1]!r} [{'MATCH' if cand[1] == desc_norm else 'MISMATCH'}], Amount={cand[2]}"
+						for cand in near_misses[:3]
+					)
+					logger.warning(
+						"Row %d failed to match, but DB has record(s) with same amount (%s):\n"
+						"  Bank Row : Date=%r (norm: %s) | Desc=%r (norm: %s) | Col3=%r | Col4=%r\n"
+						"  Bank Sig : %s\n%s",
+						row_number,
+						target_amount,
+						c1_val,
+						date_norm,
+						c2_val,
+						desc_norm,
+						c3_val,
+						c4_val,
+						payment_signature,
+						candidate_details,
+					)
+				elif payment_signature is not None:
+					date_matches = [sig for sig in db_signatures_list if sig[0] == date_norm]
+					if len(date_matches) <= 2 and date_matches:
+						logger.debug(
+							"Row %d: Bank Sig=%s not in DB. DB entries on this date: %s",
+							row_number,
+							payment_signature,
+							date_matches,
+						)
 
 			transaction_cell = bank_sheet.cell(row=row_number, column=2)
 			credit_cell = bank_sheet.cell(row=row_number, column=4)
@@ -494,6 +622,17 @@ def process_speedpoint_reconciliation(
 			"kind": "speedpoint",
 		},
 	)
+
+	logger.info("=" * 70)
+	logger.info("OFX Matches: %d", ofx_payment_matches)
+	logger.info("Unmatched OFX payments remaining in DB: %d", sum(ofx_payment_counts.values()))
+	if ofx_payment_counts:
+		remaining_lines = "\n".join(
+			f"  Remaining (count={count}): Date={sig[0]} | Supplier={sig[1]!r} | Amount={sig[2]}"
+			for sig, count in ofx_payment_counts.items()
+		)
+		logger.info("Remaining unmatched DB records:\n%s", remaining_lines)
+	logger.info("=" * 70)
 
 	manifest = {
 		"run_id": run_id,
