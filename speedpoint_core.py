@@ -362,11 +362,15 @@ def find_speedpoint_amount_match(
 	worksheet,
 	expected_amount: float,
 	amount_column: int = 19,
+	used_rows: set[int] | None = None,
 ) -> tuple[int | None, float | None, bool]:
-	for row_number in range(1, worksheet.max_row + 1):
-		amount_value = parse_amount(worksheet.cell(row=row_number, column=amount_column).value)
-		if amount_value == expected_amount:
-			return row_number, amount_value, True
+	for cells in worksheet.iter_cols(min_col=amount_column, max_col=amount_column):
+		for cell in cells:
+			if used_rows is not None and cell.row in used_rows:
+				continue
+			amount_value = parse_amount(cell.value)
+			if amount_value == expected_amount:
+				return cell.row, amount_value, True
 	return None, None, False
 
 
@@ -495,6 +499,7 @@ def process_speedpoint_reconciliation(
 		speedpoint_workbooks.append(
 			(speedpoint_path, speedpoint_workbook, pick_speedpoint_sheet(speedpoint_workbook))
 		)
+	speedpoint_amount_rows_used = {id(item[2]): set() for item in speedpoint_workbooks}
 
 	logger.info("=" * 70)
 	logger.info("Starting reconciliation run %s", run_id)
@@ -627,6 +632,7 @@ def process_speedpoint_reconciliation(
 			match_row: int | None = None
 			match_amount: float | None = None
 			exact_match = False
+			resolved = False
 			reason = "No match found"
 
 			for speedpoint_path, speedpoint_workbook, speedpoint_sheet in speedpoint_workbooks:
@@ -641,6 +647,7 @@ def process_speedpoint_reconciliation(
 						highlight_speedpoint_range(speedpoint_sheet, match_row, 7, 15)
 						highlight_bank_match(bank_sheet, row_number, 4)
 						total_matches += 1
+						resolved = True
 						break
 					if match_row is not None:
 						reason = "Amount mismatch"
@@ -648,32 +655,36 @@ def process_speedpoint_reconciliation(
 						reason = "No matching G:O total"
 				else:
 					terminal_column = int(transaction_info["speedpoint_column"])
+					amount_match_row, amount_match, amount_exact = find_speedpoint_amount_match(
+						speedpoint_sheet,
+						expected_amount,
+						amount_column=19,
+						used_rows=speedpoint_amount_rows_used[id(speedpoint_sheet)],
+					)
+					if amount_exact and amount_match_row is not None:
+						highlight_speedpoint_match(speedpoint_sheet, amount_match_row, 18)
+						highlight_bank_match(bank_sheet, row_number, 4)
+						speedpoint_amount_rows_used[id(speedpoint_sheet)].add(amount_match_row)
+						total_matches += 1
+						resolved = True
+						break
+
 					match_row, match_amount, exact_match = find_speedpoint_match(
 						speedpoint_sheet,
 						terminal_column,
 						int(transaction_info["batch_number"]),
 						expected_amount,
 					)
-					if match_row is None:
-						match_row, match_amount, exact_match = find_speedpoint_amount_match(
-							speedpoint_sheet,
-							expected_amount,
-							amount_column=19,
-						)
-						if exact_match and match_row is not None:
-							highlight_speedpoint_match(speedpoint_sheet, match_row, 18)
-							highlight_bank_match(bank_sheet, row_number, 4)
-							total_matches += 1
-							break
 					if exact_match and match_row is not None:
 						highlight_speedpoint_match(speedpoint_sheet, match_row, terminal_column)
 						highlight_bank_match(bank_sheet, row_number, 4)
 						total_matches += 1
+						resolved = True
 						break
 					reason = "Batch not found"
 					if match_row is not None:
 						reason = "Amount mismatch"
-			if exact_match and match_row is not None:
+			if resolved:
 				continue
 
 			issue = {
