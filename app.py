@@ -554,9 +554,16 @@ class SpeedpointApp(ctk.CTk):
 
 
 def main() -> None:
+	# Allow setting credentials via command line without Python installed
+	if len(sys.argv) >= 4 and sys.argv[1] == "--set":
+		setting_key = sys.argv[2]
+		setting_val = sys.argv[3]
+		keyring.set_password(APP_NAME, setting_key, setting_val)
+		print(f"Successfully saved {setting_key} to Windows Credentials.")
+		return
+	
 	app = SpeedpointApp()
 	app.mainloop()
-
 
 if __name__ == "__main__":
 	main()
