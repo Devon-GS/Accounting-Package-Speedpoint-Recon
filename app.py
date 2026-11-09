@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+import os
 import queue
+import sys
 import threading
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import customtkinter as ctk
+import keyring
 
-from speedpoint_core import check_database_connection, fix_reconciliation_issues, process_speedpoint_reconciliation
-
+from speedpoint_core import (
+	APP_NAME,
+	check_database_connection,
+	fix_reconciliation_issues,
+	process_speedpoint_reconciliation,
+)
 
 class SpeedpointApp(ctk.CTk):
 	def __init__(self) -> None:
@@ -257,13 +264,36 @@ class SpeedpointApp(ctk.CTk):
 			padding=(8, 6),
 		)
 
+	def _get_initial_dir(self, key: str) -> str | None:
+		path_str = None
+		
+		if getattr(sys, "frozen", False):
+			try:
+				path_str = keyring.get_password(APP_NAME, key)
+			except Exception:
+				pass
+
+		if not path_str:
+			path_str = os.environ.get(key)
+
+		if path_str:
+			clean_path = path_str.strip().strip('\'"')
+			target = Path(clean_path)
+			if target.exists() and target.is_dir():
+				return str(target)
+
+		return None
+	
 	def choose_speedpoint_files(self) -> None:
 		paths = filedialog.askopenfilenames(
 			title="Choose Speedpoints workbooks",
 			filetypes=[("Excel workbook", "*.xlsx")],
+			initialdir=self._get_initial_dir("SPEEDPOINT_PATH")
 		)
+		
 		if not paths:
 			return
+		
 		selected_paths = list(self.speedpoint_files)
 		for item in paths:
 			selected = Path(item)
@@ -280,9 +310,12 @@ class SpeedpointApp(ctk.CTk):
 		paths = filedialog.askopenfilenames(
 			title="Choose Bank Statements workbooks",
 			filetypes=[("Excel workbooks", "*.xlsx")],
+			initialdir=self._get_initial_dir("BANK_STATEMENT_PATH")
 		)
+		
 		if not paths:
 			return
+		
 		selected_paths = list(self.bank_files)
 		for item in paths:
 			selected = Path(item)
