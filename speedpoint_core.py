@@ -4,6 +4,7 @@ import os
 import hashlib
 import json
 import logging
+import sqlite3
 from logging.handlers import RotatingFileHandler
 import re
 from collections import Counter
@@ -415,6 +416,61 @@ def highlight_ofx_payment_match(worksheet, row_number: int) -> None:
 		worksheet.cell(row=row_number, column=column_number).fill = OFX_HIGHLIGHT
 
 
+FIXED_ISSUES_DB = BASE_DIR / "fixed_issues.sqlite3"
+
+
+def _fixed_issue_key(row: dict[str, object]) -> str:
+	values = {
+		"bank_path": str(row.get("bank_path", "")),
+		"sheet_name": str(row.get("sheet_name", "")),
+		"row_number": int(row.get("row_number", 0)),
+		"transaction": str(row.get("transaction", "")),
+		"credit": round(float(row.get("credit", 0.0)), 2),
+		"terminal": str(row.get("terminal", "")),
+		"batch_number": str(row.get("batch_number", "")),
+	}
+	return hashlib.sha256(json.dumps(values, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _load_fixed_issue_keys() -> set[str]:
+	if not FIXED_ISSUES_DB.exists():
+		return set()
+	with sqlite3.connect(FIXED_ISSUES_DB) as connection:
+		connection.execute(
+			"CREATE TABLE IF NOT EXISTS fixed_issues (issue_key TEXT PRIMARY KEY, created_at TEXT NOT NULL)"
+		)
+		return {row[0] for row in connection.execute("SELECT issue_key FROM fixed_issues")}
+
+
+def fix_reconciliation_issues(rows: list[dict[str, object]]) -> int:
+	if not rows:
+		return 0
+
+	from openpyxl import load_workbook
+
+	workbooks: dict[str, tuple[object, object]] = {}
+	for row in rows:
+		bank_path = Path(str(row["bank_path"]))
+		if str(bank_path) not in workbooks:
+			workbook = load_workbook(bank_path)
+			workbooks[str(bank_path)] = (workbook, workbook[row["sheet_name"]])
+		_, worksheet = workbooks[str(bank_path)]
+		highlight_bank_match(worksheet, int(row["row_number"]), 4)
+
+	for bank_path, (workbook, _) in workbooks.items():
+		workbook.save(bank_path)
+
+	with sqlite3.connect(FIXED_ISSUES_DB) as connection:
+		connection.execute(
+			"CREATE TABLE IF NOT EXISTS fixed_issues (issue_key TEXT PRIMARY KEY, created_at TEXT NOT NULL)"
+		)
+		connection.executemany(
+			"INSERT OR IGNORE INTO fixed_issues (issue_key, created_at) VALUES (?, ?)",
+			[(_fixed_issue_key(row), datetime.now().isoformat(timespec="seconds")) for row in rows],
+		)
+	return len(rows)
+
+
 def process_speedpoint_reconciliation(
 	speedpoint_paths: list[Path] | Path,
 	bank_paths: list[Path],
@@ -478,6 +534,7 @@ def process_speedpoint_reconciliation(
 		logger.debug("Sample DB signatures:\n%s", sample_lines)
 
 	unresolved_rows: list[dict[str, object]] = []
+	fixed_issue_keys = _load_fixed_issue_keys()
 	total_matches = 0
 	ofx_payment_matches = 0
 	edited_files: list[dict[str, str]] = []
@@ -619,22 +676,23 @@ def process_speedpoint_reconciliation(
 			if exact_match and match_row is not None:
 				continue
 
-			unresolved_rows.append(
-				{
-					"file_name": bank_original_name,
-					"sheet_name": bank_sheet.title,
-					"row_number": row_number,
-					"transaction": compact_text(transaction_cell.value),
-					"credit": expected_amount,
-					"terminal": transaction_info.get("speedpoint_terminal") or transaction_info.get("bank_terminal") or "",
-					"bank_terminal": transaction_info["bank_terminal"],
-					"batch_number": transaction_info["batch_number"],
-					"transaction_type": transaction_info["transaction_type"],
-					"reason": reason,
-					"matched_row": match_row,
-					"matched_amount": match_amount,
-				}
-			)
+			issue = {
+				"bank_path": str(bank_path),
+				"file_name": bank_original_name,
+				"sheet_name": bank_sheet.title,
+				"row_number": row_number,
+				"transaction": compact_text(transaction_cell.value),
+				"credit": expected_amount,
+				"terminal": transaction_info.get("speedpoint_terminal") or transaction_info.get("bank_terminal") or "",
+				"bank_terminal": transaction_info["bank_terminal"],
+				"batch_number": transaction_info["batch_number"],
+				"transaction_type": transaction_info["transaction_type"],
+				"reason": reason,
+				"matched_row": match_row,
+				"matched_amount": match_amount,
+			}
+			if _fixed_issue_key(issue) not in fixed_issue_keys:
+				unresolved_rows.append(issue)
 
 		bank_workbook.save(bank_path)
 		edited_files.append(

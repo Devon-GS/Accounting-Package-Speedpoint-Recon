@@ -8,7 +8,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import customtkinter as ctk
 
-from speedpoint_core import check_database_connection, process_speedpoint_reconciliation
+from speedpoint_core import check_database_connection, fix_reconciliation_issues, process_speedpoint_reconciliation
 
 
 class SpeedpointApp(ctk.CTk):
@@ -38,6 +38,8 @@ class SpeedpointApp(ctk.CTk):
 		self.speedpoint_files: list[Path] = []
 		self.bank_files: list[Path] = []
 		self.results: dict[str, object] | None = None
+		self.result_rows_by_item: dict[str, dict[str, object]] = {}
+		self.pending_fix_items: list[str] = []
 		self.worker_queue: queue.Queue[tuple[str, object]] = queue.Queue()
 
 		self._build_ui()
@@ -72,6 +74,14 @@ class SpeedpointApp(ctk.CTk):
 			command=self.process_files,
 		)
 		self.process_button.grid(row=0, column=0, sticky="w")
+
+		self.fix_button = ctk.CTkButton(
+			button_row,
+			text="Fix Issues",
+			height=42,
+			command=self.fix_issues,
+		)
+		self.fix_button.grid(row=0, column=4, sticky="e")
 
 		self.status_label = ctk.CTkLabel(button_row, text="Selected files will be edited in place.")
 		self.status_label.grid(row=0, column=1, padx=(12, 0), sticky="w")
@@ -198,8 +208,9 @@ class SpeedpointApp(ctk.CTk):
 		table_wrap.grid_rowconfigure(0, weight=1)
 		table_wrap.grid_columnconfigure(0, weight=1)
 
-		columns = ("file", "row", "transaction", "credit", "terminal", "batch", "reason")
+		columns = ("fixed", "file", "row", "transaction", "credit", "terminal", "batch", "reason")
 		self.tree = ttk.Treeview(table_wrap, columns=columns, show="headings", height=10)
+		self.tree.heading("fixed", text="Fixed")
 		self.tree.heading("file", text="File")
 		self.tree.heading("row", text="Row")
 		self.tree.heading("transaction", text="Transaction")
@@ -208,6 +219,7 @@ class SpeedpointApp(ctk.CTk):
 		self.tree.heading("batch", text="Batch")
 		self.tree.heading("reason", text="Reason")
 
+		self.tree.column("fixed", width=60, anchor="center")
 		self.tree.column("file", width=240, anchor="w")
 		self.tree.column("row", width=70, anchor="center")
 		self.tree.column("transaction", width=280, anchor="w")
@@ -221,6 +233,7 @@ class SpeedpointApp(ctk.CTk):
 		self.tree.configure(yscrollcommand=ys.set, xscrollcommand=xs.set)
 
 		self.tree.grid(row=0, column=0, sticky="nsew")
+		self.tree.bind("<Button-1>", self._toggle_fixed_checkbox)
 		ys.grid(row=0, column=1, sticky="ns")
 		xs.grid(row=1, column=0, sticky="ew")
 
@@ -270,7 +283,7 @@ class SpeedpointApp(ctk.CTk):
 		)
 		if not paths:
 			return
-		selected_paths = []
+		selected_paths = list(self.bank_files)
 		for item in paths:
 			selected = Path(item)
 			if selected.suffix.lower() != ".xlsx":
@@ -327,6 +340,37 @@ class SpeedpointApp(ctk.CTk):
 		worker = threading.Thread(target=self._worker_process, daemon=True)
 		worker.start()
 
+	def _toggle_fixed_checkbox(self, event: tk.Event) -> None:
+		item = self.tree.identify_row(event.y)
+		column = self.tree.identify_column(event.x)
+		if not item or column != "#1":
+			return
+		current = self.tree.set(item, "fixed")
+		self.tree.set(item, "fixed", "☑" if current != "☑" else "☐")
+
+	def fix_issues(self) -> None:
+		selected_items = [
+			item for item in self.tree.get_children() if self.tree.set(item, "fixed") == "☑"
+		]
+		if not selected_items:
+			messagebox.showwarning("No issues selected", "Please check at least one issue to fix.")
+			return
+
+		self.pending_fix_items = selected_items
+		rows = [self.result_rows_by_item[item] for item in selected_items]
+		self.fix_button.configure(state="disabled")
+		self.status_label.configure(text="Fixing selected issues...")
+		worker = threading.Thread(target=self._worker_fix_issues, args=(rows,), daemon=True)
+		worker.start()
+
+	def _worker_fix_issues(self, rows: list[dict[str, object]]) -> None:
+		try:
+			fixed_count = fix_reconciliation_issues(rows)
+		except Exception as exc:  # noqa: BLE001 - surfaced to the UI
+			self.worker_queue.put(("fix_error", exc))
+			return
+		self.worker_queue.put(("fixed", fixed_count))
+
 	def _worker_process(self) -> None:
 		try:
 			manifest = process_speedpoint_reconciliation(self.speedpoint_files, self.bank_files)
@@ -351,6 +395,10 @@ class SpeedpointApp(ctk.CTk):
 					self._handle_error(payload)
 				elif kind == "db_status":
 					self._handle_database_status(payload)
+				elif kind == "fix_error":
+					self._handle_fix_error(payload)
+				elif kind == "fixed":
+					self._handle_fixed(payload)
 				else:
 					self._handle_result(payload)
 		except queue.Empty:
@@ -362,6 +410,25 @@ class SpeedpointApp(ctk.CTk):
 		self.process_button.configure(state="normal")
 		messagebox.showerror("Processing failed", str(exc))
 		self.summary_label.configure(text="Processing failed.")
+
+	def _handle_fix_error(self, exc: Exception) -> None:
+		self.fix_button.configure(state="normal")
+		messagebox.showerror("Fix failed", str(exc))
+		self.status_label.configure(text="Could not fix the selected issues.")
+
+	def _handle_fixed(self, fixed_count: int) -> None:
+		for item in self.pending_fix_items:
+			self.result_rows_by_item.pop(item, None)
+			self.tree.delete(item)
+		self.pending_fix_items = []
+		self.fix_button.configure(state="normal")
+		remaining = len(self.tree.get_children())
+		if remaining:
+			self.status_label.configure(text=f"Fixed {fixed_count} issue{'s' if fixed_count != 1 else ''}.")
+		else:
+			self.tree.master.grid_remove()
+			self.empty_state.grid()
+			self.status_label.configure(text=f"Fixed {fixed_count} issue{'s' if fixed_count != 1 else ''}. No unresolved issues remain.")
 
 	def _handle_database_status(self, payload: tuple[bool, str]) -> None:
 		connected, message = payload
@@ -399,13 +466,15 @@ class SpeedpointApp(ctk.CTk):
 			self.status_label.configure(text="Selected files were edited in place.")
 
 		rows = manifest.get("unresolved_rows", [])
+		self.result_rows_by_item = {}
 		if rows:
 			self.empty_state.grid_remove()
 			for row in rows:
-				self.tree.insert(
+				item = self.tree.insert(
 					"",
 					"end",
 					values=(
+						"☐",
 						row.get("file_name", ""),
 						row.get("row_number", ""),
 						row.get("transaction", ""),
@@ -415,6 +484,7 @@ class SpeedpointApp(ctk.CTk):
 						row.get("reason", ""),
 					),
 				)
+				self.result_rows_by_item[item] = row
 		else:
 			self.empty_state.grid()
 		self._refresh_results_visibility(rows)
@@ -430,6 +500,7 @@ class SpeedpointApp(ctk.CTk):
 			self.tree.delete(item)
 		self.empty_state.grid()
 		self.tree.master.grid_remove()
+		self.result_rows_by_item = {}
 
 	def _confirm_overwrite(self) -> bool:
 		selected_files = [*self.speedpoint_files, *self.bank_files]
