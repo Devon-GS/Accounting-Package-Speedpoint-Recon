@@ -404,21 +404,29 @@ def highlight_ofx_payment_match(worksheet, row_number: int) -> None:
 
 
 def process_speedpoint_reconciliation(
-	speedpoint_path: Path,
+	speedpoint_paths: list[Path] | Path,
 	bank_paths: list[Path],
 ) -> dict[str, object]:
 	if not bank_paths:
 		raise ValueError("Please choose at least one Bank Statements .xlsx file.")
-	if speedpoint_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
-		raise ValueError("The Speedpoints file must be a .xlsx workbook.")
+	if isinstance(speedpoint_paths, Path):
+		speedpoint_paths = [speedpoint_paths]
+	if not speedpoint_paths:
+		raise ValueError("Please choose at least one Speedpoints .xlsx file.")
+	for speedpoint_path in speedpoint_paths:
+		if speedpoint_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+			raise ValueError("All Speedpoints files must be .xlsx workbooks.")
 	for bank_path in bank_paths:
 		if bank_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
 			raise ValueError("All Bank Statements files must be .xlsx workbooks.")
 
 	run_id = uuid4().hex
-	speedpoint_original_name = speedpoint_path.name
-	speedpoint_workbook = load_workbook(speedpoint_path)
-	speedpoint_sheet = pick_speedpoint_sheet(speedpoint_workbook)
+	speedpoint_workbooks = []
+	for speedpoint_path in speedpoint_paths:
+		speedpoint_workbook = load_workbook(speedpoint_path)
+		speedpoint_workbooks.append(
+			(speedpoint_path, speedpoint_workbook, pick_speedpoint_sheet(speedpoint_workbook))
+		)
 
 	logger.info("=" * 70)
 	logger.info("Starting reconciliation run %s", run_id)
@@ -552,38 +560,41 @@ def process_speedpoint_reconciliation(
 			exact_match = False
 			reason = "No match found"
 
-			if transaction_info["transaction_type"] == "NEDLNK DP":
-				match_row, match_amount, exact_match = find_speedpoint_total_match(
-					speedpoint_sheet,
-					expected_amount,
-					start_column=7,
-					end_column=15,
-				)
-				if exact_match and match_row is not None:
-					highlight_speedpoint_range(speedpoint_sheet, match_row, 7, 15)
-					highlight_bank_match(bank_sheet, row_number, 4)
-					total_matches += 1
-					continue
-				if match_row is not None:
-					reason = "Amount mismatch"
+			for speedpoint_path, speedpoint_workbook, speedpoint_sheet in speedpoint_workbooks:
+				if transaction_info["transaction_type"] == "NEDLNK DP":
+					match_row, match_amount, exact_match = find_speedpoint_total_match(
+						speedpoint_sheet,
+						expected_amount,
+						start_column=7,
+						end_column=15,
+					)
+					if exact_match and match_row is not None:
+						highlight_speedpoint_range(speedpoint_sheet, match_row, 7, 15)
+						highlight_bank_match(bank_sheet, row_number, 4)
+						total_matches += 1
+						break
+					if match_row is not None:
+						reason = "Amount mismatch"
+					else:
+						reason = "No matching G:O total"
 				else:
-					reason = "No matching G:O total"
-			else:
-				terminal_column = int(transaction_info["speedpoint_column"])
-				match_row, match_amount, exact_match = find_speedpoint_match(
-					speedpoint_sheet,
-					terminal_column,
-					int(transaction_info["batch_number"]),
-					expected_amount,
-				)
-				if exact_match and match_row is not None:
-					highlight_speedpoint_match(speedpoint_sheet, match_row, terminal_column)
-					highlight_bank_match(bank_sheet, row_number, 4)
-					total_matches += 1
-					continue
-				reason = "Batch not found"
-				if match_row is not None:
-					reason = "Amount mismatch"
+					terminal_column = int(transaction_info["speedpoint_column"])
+					match_row, match_amount, exact_match = find_speedpoint_match(
+						speedpoint_sheet,
+						terminal_column,
+						int(transaction_info["batch_number"]),
+						expected_amount,
+					)
+					if exact_match and match_row is not None:
+						highlight_speedpoint_match(speedpoint_sheet, match_row, terminal_column)
+						highlight_bank_match(bank_sheet, row_number, 4)
+						total_matches += 1
+						break
+					reason = "Batch not found"
+					if match_row is not None:
+						reason = "Amount mismatch"
+			if exact_match and match_row is not None:
+				continue
 
 			unresolved_rows.append(
 				{
@@ -612,16 +623,17 @@ def process_speedpoint_reconciliation(
 			}
 		)
 
-	speedpoint_workbook.save(speedpoint_path)
-	edited_files.insert(
-		0,
-		{
-			"download_name": speedpoint_original_name,
-			"stored_name": str(speedpoint_path),
-			"original_path": str(speedpoint_path),
-			"kind": "speedpoint",
-		},
-	)
+	for speedpoint_path, speedpoint_workbook, _ in speedpoint_workbooks:
+		speedpoint_workbook.save(speedpoint_path)
+		edited_files.insert(
+			0,
+			{
+				"download_name": speedpoint_path.name,
+				"stored_name": str(speedpoint_path),
+				"original_path": str(speedpoint_path),
+				"kind": "speedpoint",
+			},
+		)
 
 	logger.info("=" * 70)
 	logger.info("OFX Matches: %d", ofx_payment_matches)
@@ -636,8 +648,8 @@ def process_speedpoint_reconciliation(
 
 	manifest = {
 		"run_id": run_id,
-		"speedpoint_original_name": speedpoint_original_name,
-		"speedpoint_download_name": speedpoint_original_name,
+		"speedpoint_original_name": speedpoint_paths[0].name,
+		"speedpoint_download_name": speedpoint_paths[0].name,
 		"bank_count": len(bank_paths),
 		"matched_count": total_matches,
 		"ofx_payment_matched_count": ofx_payment_matches,

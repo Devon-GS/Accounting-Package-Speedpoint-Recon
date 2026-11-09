@@ -35,7 +35,7 @@ class SpeedpointApp(ctk.CTk):
 		self.geometry(f"{window_width}x{window_height}+{center_x}+{center_y}")
 		self.minsize(1120, 600)
 
-		self.speedpoint_file: Path | None = None
+		self.speedpoint_files: list[Path] = []
 		self.bank_files: list[Path] = []
 		self.results: dict[str, object] | None = None
 		self.worker_queue: queue.Queue[tuple[str, object]] = queue.Queue()
@@ -145,15 +145,19 @@ class SpeedpointApp(ctk.CTk):
 		row.grid(row=3, column=0, padx=18, pady=(0, 6), sticky="ew")
 		row.grid_columnconfigure(0, weight=1)
 
-		self.speedpoint_entry = ctk.CTkEntry(row, placeholder_text="No file selected")
-		self.speedpoint_entry.grid(row=0, column=0, sticky="ew")
-		self.speedpoint_entry.configure(state="disabled")
+		add_button = ctk.CTkButton(row, text="Add Files", width=110, command=self.choose_speedpoint_files)
+		add_button.grid(row=0, column=0, sticky="w")
 
-		browse = ctk.CTkButton(row, text="Browse", width=110, command=self.choose_speedpoint_file)
-		browse.grid(row=0, column=1, padx=(12, 0))
+		clear_button = ctk.CTkButton(row, text="Clear", width=90, command=self.clear_speedpoint_files)
+		clear_button.grid(row=0, column=1, padx=(12, 0), sticky="w")
 
-		helper = ctk.CTkLabel(card, text="Choose one `.xlsx` file only.", text_color=("gray35", "gray75"))
-		helper.grid(row=4, column=0, padx=18, pady=(0, 18), sticky="w")
+		self.speedpoint_list = ctk.CTkTextbox(card, height=100, wrap="none")
+		self.speedpoint_list.grid(row=4, column=0, padx=18, pady=(0, 6), sticky="nsew")
+		self.speedpoint_list.insert("1.0", "No Speedpoints files selected.")
+		self.speedpoint_list.configure(state="disabled")
+
+		helper = ctk.CTkLabel(card, text="Choose one or more `.xlsx` files.", text_color=("gray35", "gray75"))
+		helper.grid(row=5, column=0, padx=18, pady=(0, 18), sticky="w")
 		return card
 
 	def _build_bank_card(self, parent: ctk.CTkFrame) -> ctk.CTkFrame:
@@ -240,19 +244,24 @@ class SpeedpointApp(ctk.CTk):
 			padding=(8, 6),
 		)
 
-	def choose_speedpoint_file(self) -> None:
-		path = filedialog.askopenfilename(
-			title="Choose Speedpoints workbook",
+	def choose_speedpoint_files(self) -> None:
+		paths = filedialog.askopenfilenames(
+			title="Choose Speedpoints workbooks",
 			filetypes=[("Excel workbook", "*.xlsx")],
 		)
-		if not path:
+		if not paths:
 			return
-		selected = Path(path)
-		if selected.suffix.lower() != ".xlsx":
-			messagebox.showwarning("Invalid file", "The Speedpoints file must be a .xlsx workbook.")
-			return
-		self.speedpoint_file = selected
-		self._set_entry_text(self.speedpoint_entry, str(selected))
+		selected_paths = list(self.speedpoint_files)
+		for item in paths:
+			selected = Path(item)
+			if selected.suffix.lower() == ".xlsx" and selected not in selected_paths:
+				selected_paths.append(selected)
+		self.speedpoint_files = selected_paths
+		self._refresh_speedpoint_list()
+
+	def clear_speedpoint_files(self) -> None:
+		self.speedpoint_files = []
+		self._refresh_speedpoint_list()
 
 	def choose_bank_files(self) -> None:
 		paths = filedialog.askopenfilenames(
@@ -291,9 +300,19 @@ class SpeedpointApp(ctk.CTk):
 			self.bank_list.insert("1.0", "No bank statement files selected.")
 		self.bank_list.configure(state="disabled")
 
+	def _refresh_speedpoint_list(self) -> None:
+		self.speedpoint_list.configure(state="normal")
+		self.speedpoint_list.delete("1.0", "end")
+		if self.speedpoint_files:
+			for path in self.speedpoint_files:
+				self.speedpoint_list.insert("end", f"{path}\n")
+		else:
+			self.speedpoint_list.insert("1.0", "No Speedpoints files selected.")
+		self.speedpoint_list.configure(state="disabled")
+
 	def process_files(self) -> None:
-		if self.speedpoint_file is None:
-			messagebox.showwarning("Missing file", "Please choose one Speedpoints .xlsx file.")
+		if not self.speedpoint_files:
+			messagebox.showwarning("Missing files", "Please choose at least one Speedpoints .xlsx file.")
 			return
 		if not self.bank_files:
 			messagebox.showwarning("Missing files", "Please choose at least one Bank Statements .xlsx file.")
@@ -310,7 +329,7 @@ class SpeedpointApp(ctk.CTk):
 
 	def _worker_process(self) -> None:
 		try:
-			manifest = process_speedpoint_reconciliation(self.speedpoint_file, self.bank_files)
+			manifest = process_speedpoint_reconciliation(self.speedpoint_files, self.bank_files)
 		except Exception as exc:  # noqa: BLE001 - surfaced to the UI
 			self.worker_queue.put(("error", exc))
 			return
@@ -413,7 +432,7 @@ class SpeedpointApp(ctk.CTk):
 		self.tree.master.grid_remove()
 
 	def _confirm_overwrite(self) -> bool:
-		selected_files = [self.speedpoint_file, *self.bank_files]
+		selected_files = [*self.speedpoint_files, *self.bank_files]
 		if not selected_files:
 			return False
 
