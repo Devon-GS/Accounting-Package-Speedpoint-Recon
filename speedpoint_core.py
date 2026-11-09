@@ -357,6 +357,18 @@ def find_speedpoint_match(
 	return candidate_row, candidate_amount, False
 
 
+def find_speedpoint_amount_match(
+	worksheet,
+	expected_amount: float,
+	amount_column: int = 19,
+) -> tuple[int | None, float | None, bool]:
+	for row_number in range(1, worksheet.max_row + 1):
+		amount_value = parse_amount(worksheet.cell(row=row_number, column=amount_column).value)
+		if amount_value == expected_amount:
+			return row_number, amount_value, True
+	return None, None, False
+
+
 def find_speedpoint_total_match(
 	worksheet,
 	expected_amount: float,
@@ -585,6 +597,17 @@ def process_speedpoint_reconciliation(
 						int(transaction_info["batch_number"]),
 						expected_amount,
 					)
+					if match_row is None:
+						match_row, match_amount, exact_match = find_speedpoint_amount_match(
+							speedpoint_sheet,
+							expected_amount,
+							amount_column=19,
+						)
+						if exact_match and match_row is not None:
+							highlight_speedpoint_match(speedpoint_sheet, match_row, 18)
+							highlight_bank_match(bank_sheet, row_number, 4)
+							total_matches += 1
+							break
 					if exact_match and match_row is not None:
 						highlight_speedpoint_match(speedpoint_sheet, match_row, terminal_column)
 						highlight_bank_match(bank_sheet, row_number, 4)
